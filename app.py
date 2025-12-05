@@ -1,7 +1,9 @@
-import streamlit as st
+import pathlib
 import pandas as pd
+import streamlit as st
 
-# ---------- FILENAMES (repo root) ----------
+# ---------- CONFIG ----------
+
 UNIVERSE_FILE = "Master_Stock_Sheet - Sheet5.csv"
 WEIGHTS_FILE = "wave_weights.csv"
 
@@ -10,181 +12,237 @@ st.set_page_config(
     layout="wide",
 )
 
-# ---------- LOADERS WITH CACHING ----------
-@st.cache_data
+# ---------- HELPERS ----------
+
 def load_universe(path: str) -> pd.DataFrame:
+    """Load the master stock universe and normalize column names."""
     df = pd.read_csv(path)
 
-    if "Ticker" not in df.columns:
-        raise ValueError(f"Universe file {path} must contain a 'Ticker' column.")
+    # Keep a copy of original columns for display
+    df.columns = [c.strip() for c in df.columns]
 
-    # Standardize tickers
-    df["Ticker"] = df["Ticker"].astype(str).str.strip().str.upper()
+    # Build a normalized name map for convenience
+    lower_map = {c.lower().strip(): c for c in df.columns}
 
-    return df
+    # Best-guess for key fields
+    ticker_col = lower_map.get("ticker")
+    name_col = lower_map.get("name") or lower_map.get("company")
+    sector_col = lower_map.get("sector")
 
+    # Standardize field names if they exist
+    rename_map = {}
+    if ticker_col and ticker_col != "Ticker":
+        rename_map[ticker_col] = "Ticker"
+    if name_col and name_col != "Company":
+        rename_map[name_col] = "Company"
+    if sector_col and sector_col != "Sector":
+        rename_map[sector_col] = "Sector"
+    if rename_map:
+        df = df.rename(columns=rename_map)
 
-@st.cache_data
-def load_wave_weights(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path)
-
-    expected_cols = {"Wave", "Ticker", "Weight"}
-    missing = expected_cols.difference(df.columns)
-    if missing:
+    # Clean ticker for joins
+    if "Ticker" in df.columns:
+        df["Ticker_key"] = df["Ticker"].astype(str).str.upper().str.strip()
+    else:
         raise ValueError(
-            f"Weights file {path} must contain columns {sorted(expected_cols)}. "
-            f"Missing: {sorted(missing)}. Found: {list(df.columns)}"
+            f"Universe file '{path}' must contain a 'Ticker' column. "
+            f"Found columns: {list(df.columns)}"
         )
 
+    return df
+
+
+def load_wave_weights(path: str) -> pd.DataFrame:
+    """Load wave weights CSV and ensure columns Wave, Ticker, Weight exist."""
+    df = pd.read_csv(path)
+    df.columns = [c.strip() for c in df.columns]
+
+    required = ["Wave", "Ticker", "Weight"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Weights file must contain columns {required}. "
+            f"Missing: {missing}. Found: {list(df.columns)}"
+        )
+
+    # Clean up
+    df = df.dropna(subset=["Wave", "Ticker", "Weight"])
     df["Wave"] = df["Wave"].astype(str).str.strip()
-    df["Ticker"] = df["Ticker"].astype(str).str.strip().str.upper()
-    df["Weight"] = pd.to_numeric(df["Weight"], errors="coerce").fillna(0.0)
+    df["Ticker"] = df["Ticker"].astype(str).str.upper().str.strip()
+    df["Weight"] = pd.to_numeric(df["Weight"], errors="coerce")
+    df = df.dropna(subset=["Weight"])
+
+    # Optional: normalize so each Wave sums to 1.0 (for presentation)
+    def normalize(group):
+        total = group["Weight"].sum()
+        if total and total > 0:
+            group["Weight"] = group["Weight"] / total
+        return group
+
+    df = df.groupby("Wave", group_keys=False).apply(normalize)
 
     return df
 
 
-def safe_load_data():
-    """Load universe + weights, show a clear error and stop if anything is wrong."""
-    try:
-        universe = load_universe(UNIVERSE_FILE)
-    except Exception as e:
-        st.error(f"❌ Cannot load universe file `{UNIVERSE_FILE}`.\n\nError: {e}")
-        st.stop()
-
-    try:
-        weights = load_wave_weights(WEIGHTS_FILE)
-    except Exception as e:
-        st.error(f"❌ Cannot load weights file `{WEIGHTS_FILE}`.\n\nError: {e}")
-        st.stop()
-
+@st.cache_data(show_spinner=False)
+def load_all_data():
+    universe = load_universe(UNIVERSE_FILE)
+    weights = load_wave_weights(WEIGHTS_FILE)
     return universe, weights
 
 
-# ---------- MAIN APP ----------
-def main():
-    st.markdown(
-        "<h1 style='font-weight:700;'>WAVES INTELLIGENCE™ – MULTIWAVE CONSOLE</h1>",
-        unsafe_allow_html=True,
-    )
-    st.write("Equity Waves only – benchmark-aware, AI-directed, multi-mode demo.")
+def build_wave_view(universe: pd.DataFrame, weights: pd.DataFrame, wave_name: str):
+    """Return merged holdings for a single wave."""
+    w = weights[weights["Wave"] == wave_name].copy()
 
-    universe, weights = safe_load_data()
+    if w.empty:
+        return pd.DataFrame(), pd.DataFrame()
 
-    # Available Waves from the weights file
-    available_waves = sorted(weights["Wave"].unique())
-
-    # ----- SIDEBAR -----
-    with st.sidebar:
-        st.header("Wave selection")
-
-        wave_name = st.selectbox(
-            "Select Wave",
-            options=available_waves,
-            index=0 if available_waves else None,
-        )
-
-        mode = st.radio(
-            "Mode",
-            options=["Standard", "Alpha-Minus-Beta", "Private Logic™"],
-            index=0,
-            help="For this demo, all modes use the same holdings. "
-                 "In production, risk overlays would differ by mode.",
-        )
-
-    if not available_waves:
-        st.warning("No Waves found in the weights file.")
-        st.stop()
-
-    # Filter weights to the selected Wave
-    wave_weights = weights[weights["Wave"] == wave_name].copy()
-
-    if wave_weights.empty:
-        st.warning(f"No holdings found for Wave: **{wave_name}**.")
-        st.stop()
-
-    # Merge with universe to pull in company / sector / etc.
-    merged = pd.merge(
-        wave_weights,
+    # Join on cleaned ticker
+    merged = w.merge(
         universe,
-        on="Ticker",
+        left_on="Ticker",
+        right_on="Ticker_key",
         how="left",
         suffixes=("", "_universe"),
     )
 
-    # Rename the Wave's own weight so it is clearly separate from any universe weight
-    if "Weight" in merged.columns:
-        merged.rename(columns={"Weight": "WaveWeight"}, inplace=True)
+    # Friendly columns for the main table
+    cols = []
 
-    # If the universe also has a "Weight" column, it will be called "Weight_universe"
-    # by the merge above – so there are no duplicate column names.
+    if "Ticker" in merged.columns:
+        cols.append("Ticker")
+    if "Company" in merged.columns:
+        cols.append("Company")
+    if "Sector" in merged.columns:
+        cols.append("Sector")
 
-    # ---------- TOP PANEL ----------
-    st.subheader(f"{wave_name} (LIVE Demo)")
-    st.caption(
-        f"Mode: **{mode}** – demo only; in production this flag would drive overlays, "
-        f"SmartSafe™, and rebalancing logic."
-    )
+    merged = merged.rename(columns={"Weight": "WaveWeight"})
 
-    total_holdings = len(wave_weights)
-    st.write(f"**Total holdings:** {total_holdings}")
+    if "WaveWeight" in merged.columns:
+        cols.append("WaveWeight")
 
-    # ---------- TOP-10 HOLDINGS BY WAVE WEIGHT ----------
-    if "WaveWeight" not in merged.columns:
+    # If we somehow have none of those, just show everything
+    if not cols:
+        cols = merged.columns.tolist()
+
+    holdings = merged[cols].copy()
+
+    # Top-10 by Wave weight
+    if "WaveWeight" in holdings.columns:
+        holdings = holdings.sort_values("WaveWeight", ascending=False)
+
+    top10 = holdings.head(10).reset_index(drop=True)
+
+    # Sector allocation
+    sector_alloc = pd.DataFrame()
+    if "Sector" in merged.columns and "WaveWeight" in merged.columns:
+        sector_alloc = (
+            merged.groupby("Sector", dropna=False)["WaveWeight"]
+            .sum()
+            .reset_index()
+            .rename(columns={"WaveWeight": "Weight"})
+            .sort_values("Weight", ascending=False)
+        )
+
+    return top10, sector_alloc
+
+
+# ---------- MAIN APP ----------
+
+def main():
+    st.title("WAVES INTELLIGENCE™ – MULTIWAVE CONSOLE")
+    st.caption("Equity Waves only – benchmark-aware, AI-directed, multi-mode demo.")
+
+    # Try to load data up front
+    try:
+        universe, weights = load_all_data()
+    except FileNotFoundError as e:
         st.error(
-            "WaveWeight column not found after merge. "
-            "Check that the weights file includes a numeric 'Weight' column."
+            f"Cannot find data file.\n\n"
+            f"Make sure **{UNIVERSE_FILE}** and **{WEIGHTS_FILE}** "
+            f"are uploaded to the repo root.\n\nError: {e}"
         )
         st.stop()
+    except ValueError as e:
+        st.error(f"Data problem:\n\n{e}")
+        st.stop()
+    except Exception as e:
+        st.error(f"Unexpected error while loading data:\n\n{e}")
+        st.stop()
 
-    merged["WaveWeight"] = pd.to_numeric(merged["WaveWeight"], errors="coerce").fillna(0.0)
+    # Sidebar – wave selection
+    st.sidebar.header("Wave selector")
 
-    top10 = merged.sort_values("WaveWeight", ascending=False).head(10)
+    available_waves = sorted(weights["Wave"].unique().tolist())
+    if not available_waves:
+        st.sidebar.error("No waves found in wave_weights.csv")
+        st.stop()
 
-    left_col, right_col = st.columns([2, 2])
+    selected_wave = st.sidebar.selectbox("Choose a Wave", available_waves, index=0)
 
-    with left_col:
-        st.markdown("### Top-10 holdings (by Wave weight)")
+    # Optional: show quick stats in sidebar
+    num_holdings = (weights["Wave"] == selected_wave).sum()
+    st.sidebar.markdown(f"**Holdings in this Wave:** {num_holdings}")
 
-        display_cols = []
-        for c in ["Ticker", "Company", "Sector", "WaveWeight"]:
-            if c in top10.columns:
-                display_cols.append(c)
+    st.markdown(f"### {selected_wave} (LIVE Demo)")
+    st.caption(
+        "Mode: Standard – demo only; in production this flag would drive overlays, "
+        "SmartSafe™, and rebalancing logic."
+    )
 
+    # Build per-wave view
+    top10, sector_alloc = build_wave_view(universe, weights, selected_wave)
+
+    if top10.empty:
+        st.warning(f"No holdings found for **{selected_wave}** in wave_weights.csv.")
+        st.stop()
+
+    col_table, col_chart = st.columns([1.2, 1])
+
+    with col_table:
+        st.subheader("Top-10 holdings (by Wave weight)")
         st.dataframe(
-            top10[display_cols].reset_index(drop=True),
+            top10,
             use_container_width=True,
+            hide_index=True,
         )
 
-    with right_col:
-        st.markdown("### Top-10 by Wave weight – chart")
-
-        chart_data = top10.set_index("Ticker")["WaveWeight"]
-        st.bar_chart(chart_data)
-
-    # ---------- SECTOR ALLOCATION ----------
-    if "Sector" in merged.columns:
-        st.markdown("### Sector allocation")
-
-        sector_alloc = (
-            merged.groupby("Sector")["WaveWeight"]
-            .sum()
-            .sort_values(ascending=False)
-        )
-
-        st.dataframe(
-            sector_alloc.reset_index().rename(columns={"WaveWeight": "WaveWeightSum"}),
-            use_container_width=True,
-        )
-    else:
-        st.info(
-            "No **Sector** column found in the universe file. "
-            "Add a Sector column to see sector allocation."
-        )
+    with col_chart:
+        if "Ticker" in top10.columns and "WaveWeight" in top10.columns:
+            st.subheader("Top-10 by Wave weight – chart")
+            # Basic bar chart
+            chart_data = top10.set_index("Ticker")["WaveWeight"]
+            st.bar_chart(chart_data)
+        else:
+            st.info("Wave weight chart unavailable – missing Ticker / WaveWeight columns.")
 
     st.markdown("---")
+
+    st.subheader("Sector allocation")
+    if not sector_alloc.empty:
+        c1, c2 = st.columns([1.2, 1])
+        with c1:
+            st.dataframe(
+                sector_alloc,
+                use_container_width=True,
+                hide_index=True,
+            )
+        with c2:
+            st.bar_chart(
+                sector_alloc.set_index("Sector")["Weight"]
+            )
+    else:
+        st.info(
+            "Sector column not found in the universe file – "
+            "sector allocation view is disabled."
+        )
+
+    # Footer
+    st.markdown("---")
     st.caption(
-        "Universe: derived from `Master_Stock_Sheet - Sheet5.csv`. "
-        "Wave definitions & weights from `wave_weights.csv`."
+        "WAVES Intelligence™ demo – MultiWave view. "
+        "Data and weights for illustration only; not investment advice."
     )
 
 
