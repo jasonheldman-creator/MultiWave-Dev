@@ -1,0 +1,41 @@
+Ticker,Weight,Wave
+NVDA,0.1,S&P 500 Wave
+AAPL,0.1,S&P 500 Wave
+MSFT,0.1,S&P 500 Wave
+AMZN,0.1,S&P 500 Wave
+META,0.1,S&P 500 Wave
+GOOGL,0.1,S&P 500 Wave
+TSLA,0.1,S&P 500 Wave
+BRK.B,0.1,S&P 500 Wave
+JNJ,0.1,S&P 500 Wave
+JPM,0.1,S&P 500 Wave
+NVDA,0.1,US Growth Wave
+META,0.1,US Growth Wave
+AMZN,0.1,US Growth Wave
+TSLA,0.1,US Growth Wave
+AVGO,0.1,US Growth Wave
+AMD,0.1,US Growth Wave
+ADBE,0.1,US Growth Wave
+CRM,0.1,US Growth Wave
+GOOGL,0.1,US Growth Wave
+MSFT,0.1,US Growth Wave
+BRK.B,0.1,Small/Mid Cap Value Wave
+UNH,0.1,Small/Mid Cap Value Wave
+HD,0.1,Small/Mid Cap Value Wave
+LOW,0.1,Small/Mid Cap Value Wave
+WMT,0.1,Small/Mid Cap Value Wave
+COST,0.1,Small/Mid Cap Value Wave
+JPM,0.1,Small/Mid Cap Value Wave
+BAC,0.1,Small/Mid Cap Value Wave
+USB,0.1,Small/Mid Cap Value Wave
+ALGN,0.1,Small/Mid Cap Value Wave
+DDOG,0.1,Small Cap Growth Wave
+NET,0.1,Small Cap Growth Wave
+ZS,0.1,Small Cap Growth Wave
+OKTA,0.1,Small Cap Growth Wave
+SNOW,0.1,Small Cap Growth Wave
+ALGN,0.1,Small Cap Growth Wave
+ENPH,0.1,Future Power & Energy Wave
+FSLR,0.1,Future Power & Energy Wave
+SEDG,0.1,Future Power & Energy Wave
+PLUG,0.1,Future Power & Energy Wave
